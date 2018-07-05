@@ -1,4 +1,6 @@
-// 校验器
+// form 表单 校验器
+// 本方法的场景默认是VUE,故form清理需要清理vue的model
+// 如在其他场景下使用,请使用各自的表单清理方法,推荐使用form.reset()快速清理
 
 // 非空
 function checkNotEmpty(value) {
@@ -34,49 +36,74 @@ const errorMsgs = {
 }
 
 // 校验失败的返回及回调
-let errResAndCallback = function (res, msg, callback, $elTarget) {
+let errResAndCallback = function (res, msg, callback) {
+    res['ok'] = false;
     res['msg'] = msg || 'error';
-    callback && callback(res, $elTarget); // 校验失败回调函数
+    callback && callback(res); // 校验失败回调函数
     return res; // 校验失败停止
 };
 // 元素校验,校验某个元素的的某个规则集(某个事件的规则集或者元素的所有规则)
 // 并调用该元素失败后的返回值
 // callback 某个规则集校验完成即回调(不管成功或失败)
+// res = {ok: true/false, msg: ''(可以为空), name: 'username...'(可以为空),ele: null(可以为空)}
 let validateFun = function (valueIn, key, $elTarget, rules, callback) {
-    console.log(key, valueIn, rules, '开始校验。。。。');
-    let res = { ok: false, name: key }; // 每个元素的校验状态需要单独的记录
+    console.log('校验开始', key)
+    let res = { ok: true, name: key, msg: '', ele: $elTarget || null }; // 每个元素的校验状态需要单独的记录
     for (let i = 0; i < rules.length; i++) {
         switch (rules[i]['type']) { // 校验类型
             // 某元素的单次校验,如其中一条规则失败,则停止校验并返回失败
             case "required":
                 console.log('required');
-                if (checkNotEmpty(valueIn)) {
-                    callback && callback(res, $elTarget);
-                    break; // 校验成功
-                }
-                return errResAndCallback(res, rules[i]['msg'], callback, $elTarget); // 校验失败停止
+                if (checkNotEmpty(valueIn)) break; // 校验成功
+                return errResAndCallback(res, rules[i]['msg'], callback); // 校验失败停止
             case "regex":
                 console.log('regex');
                 // 直接使用 /^[a-z]+$/g 的变量 会出现奇奇怪怪的问题
-                if (new RegExp(rules[i]['regex']).test(valueIn)) {
-                    callback && callback(res, $elTarget);
-                    break;  // 校验成功
-                }
-                return errResAndCallback(res, rules[i]['msg'], callback, $elTarget); // 校验失败停止
+                if (new RegExp(rules[i]['regex']).test(valueIn)) break;  // 校验成功
+                return errResAndCallback(res, rules[i]['msg'], callback); // 校验失败停止
             case "func":
                 console.log('func');
-                if (rules[i]['validator'](valueIn)) {
-                    callback && callback(res, $elTarget);
-                    break;
-                }
-                return errResAndCallback(res, rules[i]['msg'], callback, $elTarget); // 校验失败停止
+                if (rules[i]['validator'](valueIn)) break;
+                return errResAndCallback(res, rules[i]['msg'], callback); // 校验失败停止
         }
     }
-    // 校验成功的返回
-    res['ok'] = true; // 通过所有校验,设置为真
     console.log('校验结束。。。', res)
+    callback && callback(res); // 通过校验,回调函数
     return res;
 };
+
+let originalModel;
+// 限定copy的原对象是类数组[]or{length:xx}或者{}
+// Copy的结果为[]或者{}
+function deepCopy(model, originalModel) {
+    if (model instanceof Object) {
+        !originalModel && (model instanceof Array ? originalModel = [] : originalModel = {});
+        for (const key in model) {
+            if (model.hasOwnProperty(key)) {
+                const item = model[key];
+                if (item instanceof Object) {
+                    item instanceof Array ? originalModel[key] = [] : originalModel[key] = {};
+                    deepCopy(item, originalModel[key]); // 递归copy
+                } else {
+                    originalModel[key] = item;
+                }
+            }
+        }
+    }
+    return originalModel;
+}
+
+// 用目标元素的值替换model中的值,避免model的引用地址发生改变
+// 不需要deepReplace,只保证外层引用地址不发生变化即可
+function replaceObjectWithTarget(model, target) {
+    if (model instanceof Object) {
+        for (const key in target) {
+            if (target.hasOwnProperty(key)) {
+                model[key] = target[key];
+            }
+        }
+    }
+}
 
 export default {
     // loginFormValidators: { // 不支持校验器的动态修改,规则默认绑定到
@@ -107,10 +134,25 @@ export default {
     // }
     // 规则默认绑定到blur事件,如果存在其他事件,需要在规则中说明
     // 默认$form一定存在且为form的html element
-    bindFormValidators($form, validatorsJson) {
+    bindFormValidators($form, validatorsJson, model) {
+        // 存在绑定数据,copy其数据作为原始备份
+        if (model) {
+            originalModel = deepCopy(model, originalModel);
+        }
+
+        // 重置所有的元素值和校验状态
+        $form.resetFields = () => {
+            if (model) {
+                let tmp = deepCopy(originalModel, tmp); // 临时变量,引用交给外部后即销毁
+                replaceObjectWithTarget(model, tmp); // 重置model
+            } else {
+                $form.retset();
+            }
+        }
+
         if (Object.keys(validatorsJson).length) {
+            // 绑定元素校验事件
             for (let key in validatorsJson) {
-                console.log(validatorsJson[key], '校验器绑定中')
                 let { rules, callback } = validatorsJson[key];
                 let defualtEventType = 'blur'; // 默认绑定的事件类型
                 if (rules && rules.length) {
@@ -140,62 +182,57 @@ export default {
                             return false;
                         }, true)
                     });
-
                 }
             }
 
             // 给form绑定validate 和 validateAll
-            // validate 校验到元素错误即停止 , 返回格式 {ok: false, msg: '账户名不能为空'}
+            // validate 校验到元素错误即停止 , 返回格式 {ok: false, msg: '账户名不能为空', name: 'username'}
             // validateAll 校验每一个元素,收集每一个元素的第一个错误
             // 格式: {ok: false, msg: '校验失败', name: 'username', ele: $target, username:{ok: false, msg: '账户名不能为空'}, pass:{ok: false, msg: '密码不能为空'}}
             // validatorsJson 每个元素的规则集, 校验完成回调, all是否校验所有元素默认false
-            let validateForm = function(validatorsJson,callFun, all){
-                let res = { ok: true }; // 与上面相反,默认为真
-                for (let key in validatorsJson) {
-                    console.log(validatorsJson[key], '校验form')
-                    let { rules, callback } = validatorsJson[key];
+            let validateForm = function ($form, validatorsJson, callFun, all) {
+                let res = { ok: true, msg: '', name: '', ele: null }; // 默认为校验成功,与validateFun返回值完全一致
+                for (let idx = 0; idx < $form.elements.length; idx++) {
+                    let key = $form.elements[idx].name;
+                    let { rules, callback } = validatorsJson[key] || {}; // callback为元素校验器的callback
                     if (rules && rules.length) {
                         let $elItem = $form.$q("[name='" + key + "']"); // 当前dom元素
-                        let res1 = validateFun($elItem.value, key, $elItem, rules, callback);
-                        if(all){ // 校验所有元素
+                        let res1 = validateFun($elItem.value, key, $elItem, rules, callback); // callback为元素校验器的callback
+                        if (all) { // 校验所有元素
                             console.log('all');
                             if (res1.ok === false) { // 校验失败,加入返回错误集
-                                res[key] = res1;
-                                res['ok'] && ( // 第一个校验失败的元素
-                                    res['ok'] = false,
-                                    res['msg'] = res1['msg'],
-                                    res['name'] = key,
-                                    res['ele'] = $elItem
-                                );
+                                res['ok'] && (res = { ...res1 });// 第一个校验失败的元素
+                                res[key] = res1; // 将当前的校验错误放入返回值
                             }
-                        }else{ // 默认校验到第一个有错误的元素即停止, 找到第一个校验失败的元素,停止校验并返回错误
+                        } else { // 默认校验到第一个有错误的元素即停止, 找到第一个校验失败的元素,停止校验并返回错误
                             console.log('single');
                             if (res1.ok === false) {
                                 res = res1;
-                                res['ele'] = $elItem
+                                res[key] = res1; // 将当前的校验错误放入返回值
                                 break;
                             }
                         }
                     }
                 }
-                // 返回校验结果
+                // 返回校验结果, form 的callback及回调
                 callFun && callFun(res);
                 return res;
             };
-            
+
             $form.validate = (callFun) => {
-                return validateForm(validatorsJson, callFun);
+                return validateForm($form, validatorsJson, callFun);
             };
             $form.validateAll = (callFun) => {
-                return validateForm(validatorsJson, callFun, true);
+                return validateForm($form, validatorsJson, callFun, true);
             };
+
             return;
         }
 
         // 给form绑定validate, 如果没有有效的校验规则,则恒返回成功
         $form.validate = $form.validateAll = (callFun) => {
             console.log('空校验返回');
-            let res = { ok: true };
+            let res = { ok: true, name: '', msg: '', ele: null };
             callFun && callFun(res);
             return res;
         };
@@ -205,6 +242,6 @@ export default {
     checkNotEmpty,
     checkMaxLength64,
     checkMaxLength10,
-    // msgs
+    // msgs consts
     errorMsgs
 }
